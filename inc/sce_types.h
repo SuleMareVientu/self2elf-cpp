@@ -654,5 +654,4 @@ public:
 void register_keys(KeyStore &SCE_KEYS, int type);
 std::string decompress_segments(const std::vector<uint8_t> &decrypted_data, const uint64_t &size);
 void self2elf(const std::string& infile, const std::string& outfile, KeyStore& SCE_KEYS, unsigned char* klictxt);
-std::tuple<uint64_t, SelfType> get_key_type(std::ifstream &file, const SceHeader &sce_hdr);
 std::vector<SceSegment> get_segments(std::ifstream &file, const SceHeader &sce_hdr, KeyStore &SCE_KEYS, uint64_t sysver = -1, SelfType self_type = static_cast<SelfType>(0), int keytype = 0, unsigned char *klictxt = 0);

@@ -1,43 +1,23 @@
 #include <iostream>
+#include <string>
+#include <string_utils.h>
+#include <fstream>
 #include <aes.h>
 #include <sce_types.h>
 #include <miniz.h>
-#include <string_utils.h>
 #include <self.h>
-#include <fstream>
 
-void usage(const char** argv) {
-    fprintf(stderr, "usage: %s input.self output.elf work.bin\n", argv[0] ? argv[0] : "self2elf");
-    exit(1);
-}
-
-int main(int argc, const char** argv)
+int string_to_byte_array(std::string str, std::uint32_t nBytes, unsigned char* dest)
 {
-    const char* input_path, * output_path, * workbin_path;
+    if (str.length() < nBytes * 2)
+        return -1;
 
-    argc--;
-    argv++; // strip first argument
-    if (argc < 3)
-        usage(argv);
-
-    input_path = argv[0];
-    output_path = argv[1];
-    workbin_path = argv[2];
-
-    constexpr int klicense_size = 0x10;
-    std::ifstream workbin(workbin_path, std::ios::binary);
-    if (!workbin) {
-        fprintf(stderr, "Error: Failed to read work.bin (klicense)\n");
-        return 1;
+    for (std::uint32_t i = 0, j = 0; j < nBytes; i = i + 2, j++)
+    {
+        std::string byteString = str.substr(i, 2);
+        unsigned char byte = (unsigned char)strtol(byteString.c_str(), NULL, 16);
+        dest[j] = byte;
     }
-    workbin.seekg(0x50, std::ios::beg);
-    char klicense_buf[klicense_size];
-    workbin.read(klicense_buf, klicense_size);
-    workbin.close();
-
-    KeyStore keys; register_keys(keys, 0);
-    unsigned char* klicense = reinterpret_cast<unsigned char*>(klicense_buf);
-    self2elf(input_path, output_path, keys, klicense);
     return 0;
 }
 
@@ -625,7 +605,7 @@ std::string decompress_segments(const std::vector<uint8_t>& decrypted_data, cons
 
     const std::string compressed_data((char*)&decrypted_data[0], size);
     stream.next_in = (Bytef*)compressed_data.data();
-    stream.avail_in = compressed_data.size();
+    stream.avail_in = static_cast<unsigned int>(compressed_data.size());
 
     int ret = 0;
     char outbuffer[4096];
@@ -752,7 +732,7 @@ void self2elf(const std::string& infile, const std::string& outfile, KeyStore& S
         if (elf_phdrs[idx].p_filesz == 0)
             continue;
 
-        const int pad_len = elf_phdrs[idx].p_offset - at;
+        const uint64_t pad_len = elf_phdrs[idx].p_offset - at;
         if (pad_len < 0)
             fprintf(stderr, "Error: ELF p_offset Invalid\n");
 
@@ -868,37 +848,55 @@ std::vector<SceSegment> get_segments(std::ifstream& file, const SceHeader& sce_h
     return segs;
 }
 
-std::tuple<uint64_t, SelfType> get_key_type(std::ifstream& file, const SceHeader& sce_hdr) {
-    if (sce_hdr.sce_type == SceType::SELF) {
-        file.seekg(32);
-        char selfheaderbuffer[SelfHeader::Size];
-        file.read(selfheaderbuffer, SelfHeader::Size);
-        SelfHeader self_hdr = SelfHeader(selfheaderbuffer);
+void usage(const char** argv) {
+    fprintf(stderr, "usage: %s input.self output.elf klicensee\n", argv[0] ? argv[0] : "self2elf");
+    fprintf(stderr, "\tklicensee : Can be a path to a \"work.bin\" file or a hex coded string (e.g.: 00112233445566778899AABBCCDDEEFF).\n");
+    exit(1);
+}
 
-        file.seekg(self_hdr.appinfo_offset);
-        char appinfobuffer[AppInfoHeader::Size];
-        file.read(appinfobuffer, AppInfoHeader::Size);
-        AppInfoHeader appinfo_hdr = AppInfoHeader(appinfobuffer);
+int main(int argc, const char** argv)
+{
+    const char* input_path, * output_path, * klicense_arg;
 
-        return { appinfo_hdr.sys_version, appinfo_hdr.self_type };
-    }
-    else if (sce_hdr.sce_type == SceType::SRVK) {
-        file.seekg(sce_hdr.header_length);
-        char srvkheaderbuffer[SrvkHeader::Size];
-        file.read(srvkheaderbuffer, SrvkHeader::Size);
-        SrvkHeader srvk = SrvkHeader(srvkheaderbuffer);
+    argc--;
+    argv++; // strip first argument
+    if (argc < 3)
+        usage(argv);
 
-        return { srvk.sys_version, SelfType::NONE };
+    input_path = argv[0];
+    output_path = argv[1];
+    klicense_arg = argv[2];
+
+    constexpr int klicense_size = 0x10;
+    unsigned char klicense_buf[klicense_size];
+
+    std::ifstream workbin(klicense_arg, std::ios::binary);
+    if (workbin)
+    {
+        workbin.seekg(0x50, std::ios::beg);
+        workbin.read(reinterpret_cast<char*>(klicense_buf), klicense_size);
+        workbin.close();
     }
-    else if (sce_hdr.sce_type == SceType::SPKG) {
-        file.seekg(sce_hdr.header_length);
-        char spkgheaderbuffer[SpkgHeader::Size];
-        file.read(spkgheaderbuffer, SpkgHeader::Size);
-        SpkgHeader spkg = SpkgHeader(spkgheaderbuffer);
-        return { spkg.update_version << 16, SelfType::NONE };
+    else if (strlen(klicense_arg) == (klicense_size * 2))
+    {
+        if (string_to_byte_array(std::string(klicense_arg), klicense_size, klicense_buf) != 0)
+        {
+            fprintf(stderr, "Error: Input string is not a valid klicensee in HEX format\n");
+            return 1;
+        }
+
+        /*
+        std::stringstream str; std::string s1 = klicense_arg;
+        str << s1; str >> std::hex >> klicense_buf;
+        */
     }
-    else {
-        fprintf(stderr, "Error: Unknown system version for type %d\n", static_cast<int>(sce_hdr.sce_type));
-        return {};
+    else
+    {
+        fprintf(stderr, "Error: No valid klicensee was provided\n");
+        return 1;
     }
+
+    KeyStore keys; register_keys(keys, 0);
+    self2elf(input_path, output_path, keys, klicense_buf);
+    return 0;
 }
